@@ -27,9 +27,6 @@ var store = {
     font: null
 };
 
-app.preferences.rulerUnits = Units.PIXELS;
-app.preferences.typeUnits = TypeUnits.POINTS;
-
 
 try {
     doc = app.activeDocument;
@@ -51,6 +48,17 @@ if (docIsExist) {
 }
 
 
+// get realValues.unit, realValues.width, and realValues.height
+var realValues = getRealValues(app.preferences.rulerUnits, selBounds);
+
+// normalize document by setting working units to pixels and points
+app.preferences.rulerUnits = Units.PIXELS;
+app.preferences.typeUnits = TypeUnits.POINTS;
+
+// reset selection using working units
+selBounds = doc.selection.bounds;
+
+
 if (docIsExist && selIsExist) {
     doc.suspendHistory("Add Size Mark", "makeSizeMark()");
 }
@@ -58,27 +66,28 @@ if (docIsExist && selIsExist) {
 
 function makeSizeMark() {
   try {
-    var halfMark = 3,
-        txtMargin = 5,
-        baseRes = 72,
-        decimPlaces = 1,
+    var baseRes = 72,
         layerOpacity = 65,
         docRes = doc.resolution,
         scaleRatio = docRes / baseRes,
         scale = setScaleF(scaleRatio),
-        realUnits = 'px',
-        scaledUnits = 'pt',
         charThinSpace = '\u200A'; /* Thin space: \u2009, hair space: \u200A */
 
+    // Values relative to resolution
+    var lineWidth = 1 * round(scaleRatio, 0),
+        halfMark  = 3 * round(scaleRatio, 0),
+        txtMargin = 6 * round(scaleRatio, 0);
+
     var selX1 = selBounds[0].value,
-        selX2 = selBounds[2].value - 1,
+        selX2 = selBounds[2].value,
         selY1 = selBounds[1].value,
-        selY2 = selBounds[3].value - 1;
+        selY2 = selBounds[3].value;
 
     var selWidth = selX2 - selX1,
         selHeight = selY2 - selY1;
 
     var val = 0,
+        realVal = 0,
         txtLayerPos = [0, 0],
         layerNamePrefix = 'MSRMNT',
         txtJ11n = Justification.LEFT;
@@ -87,34 +96,45 @@ function makeSizeMark() {
     doc.selection.deselect();
     var markLayer = doc.artLayers.add();
 
-    setPenToolSize(1.0);
+    setPenToolSize(lineWidth);
 
     if (selWidth > selHeight) {
+        // Adjust points based on line width
+        // Useful for resolution other than 72ppi
+        adjSelX1 = selX1 + lineWidth/2;
+        adjSelX2 = selX2 - lineWidth/2;
+
         // Draw Main Line
-        drawLine([selX1, selY1], [selX2, selY1]);
+        drawLine([adjSelX1, selY1], [adjSelX2, selY1]);
 
         // Draw Edge Marks
-        drawLine([selX1, selY1 - halfMark], [selX1, selY1 + halfMark]);
-        drawLine([selX2, selY1 - halfMark], [selX2, selY1 + halfMark]);
+        drawLine([adjSelX1, selY1 - halfMark], [adjSelX1, selY1 + halfMark]);
+        drawLine([adjSelX2, selY1 - halfMark], [adjSelX2, selY1 + halfMark]);
 
         // Set some values for text layer
         layerNamePrefix = 'W';
-        val = selWidth + 1;
+        val = selWidth;
+        realVal = realValues.width;
         txtLayerPos = [selX1 + val / 2, selY1 - txtMargin];
         txtJ11n = Justification.CENTER;
 
     } else {
+        // Adjust points based on line width
+        // Useful for resolution greater than 72ppi
+        adjSelY1 = selY1 + lineWidth/2;
+        adjSelY2 = selY2 - lineWidth/2;
 
         // Draw Main Line
-        drawLine([selX1, selY1], [selX1, selY2]);
+        drawLine([selX1, adjSelY1], [selX1, adjSelY2]);
 
         // Draw Edge Marks
-        drawLine([selX1 - halfMark, selY1], [selX1 + halfMark, selY1]);
-        drawLine([selX1 - halfMark, selY2], [selX1 + halfMark, selY2]);
+        drawLine([selX1 - halfMark, adjSelY1], [selX1 + halfMark, adjSelY1]);
+        drawLine([selX1 - halfMark, adjSelY2], [selX1 + halfMark, adjSelY2]);
 
         // Set some values for text layer
         layerNamePrefix = 'H';
-        val = selHeight + 1;
+        val = selHeight;
+        realVal = realValues.height;
         txtLayerPos = [selX1 + txtMargin, selY1 + val / 2 + 4];
         txtJ11n = Justification.LEFT;
     }
@@ -130,6 +150,7 @@ function makeSizeMark() {
 
     store.font = txtLayerItem.font;
 
+    txtLayerItem.size = 12;
     txtLayerItem.font = 'ArialMT';
     txtLayerItem.autoKerning = AutoKernType.OPTICAL;
 
@@ -138,15 +159,7 @@ function makeSizeMark() {
     txtLayerItem.justification = txtJ11n;
     txtLayerItem.color = app.foregroundColor;
 
-    var label = '';
-
-    if (baseRes !== docRes) {
-        label = formatValueWithUnits(scale(val).toFixed(decimPlaces),
-                scaledUnits,
-                charThinSpace) +
-            ' / ';
-    }
-    label += formatValueWithUnits(val, realUnits, charThinSpace);
+    var label = formatValueWithUnits(realVal, realValues.unit, charThinSpace);
     txtLayerItem.contents = label;
 
     // Finish
@@ -303,4 +316,45 @@ function makeSizeMark() {
   } catch (e) {
     alert(e.line + '\n' + e)
   }
+}
+
+function getRealValues(rulerUnits, selectionBouds) {
+    var realValues = {};
+
+    // identify unit
+    if ( rulerUnits == Units.PIXELS ) {
+        realValues.unit = 'px';
+        realValues.decimals = 0;
+    } else if ( rulerUnits == Units.INCHES ) {
+        realValues.unit = 'in';
+        realValues.decimals = 3;
+    } else if ( rulerUnits == Units.CM ) {
+        realValues.unit = 'cm';
+        realValues.decimals = 1;
+    } else if ( rulerUnits == Units.MM ) {
+        realValues.unit = 'mm';
+        realValues.decimals = 0;
+    } else if ( rulerUnits == Units.POINTS ) {
+        realValues.unit = 'pt';
+        realValues.decimals = 1;
+    } else if ( rulerUnits == Units.PICAS ) {
+        realValues.unit = 'pc';
+        realValues.decimals = 2;
+    }
+
+    // define selection coordinates
+    var realSelX1 = selectionBouds[0].value,
+        realSelX2 = selectionBouds[2].value,
+        realSelY1 = selectionBouds[1].value,
+        realSelY2 = selectionBouds[3].value;
+
+    // get width and height in real units
+    realValues.width = round(realSelX2 - realSelX1, realValues.decimals);
+    realValues.height = round(realSelY2 - realSelY1, realValues.decimals);
+
+    return realValues;
+}
+
+function round(value, decimals) {
+    return Number(Math.round(value+'e'+decimals)+'e-'+decimals);
 }
